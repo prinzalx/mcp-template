@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP server</title>
+<style>
+  :root { --bg: #fff; --fg: #1d2024; --muted: #6b7280; --line: #e3e6ea; --card: #f6f7f9; --accent: #2563eb; --ok: #15803d; --err: #b91c1c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14171a; --fg: #e6e8eb; --muted: #9aa3ad; --line: #2a2f35; --card: #1c2025; --accent: #6ea0ff; --ok: #4ade80; --err: #f87171; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 system-ui, sans-serif; }
+  main { max-width: 960px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 28px 0 8px; }
+  .muted { color: var(--muted); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 8px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1; min-width: 0; }
+  code, input, button { font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  input { width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+  button { padding: 6px 12px; border: 1px solid var(--accent); border-radius: 6px; background: transparent; color: var(--accent); cursor: pointer; }
+  button:hover { background: var(--accent); color: var(--bg); }
+  pre { margin: 8px 0 0; padding: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; }
+  .ok { color: var(--ok); } .err { color: var(--err); }
+  table { width: 100%; border-collapse: collapse; } td { padding: 4px 6px; border-top: 1px solid var(--line); vertical-align: top; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title">MCP server</h1>
+  <div class="muted" id="meta">loading…</div>
+
+  <h2>Connected client</h2>
+  <div class="card" id="client">none yet</div>
+
+  <h2>Tools</h2>
+  <div id="tools"></div>
+
+  <h2>Recent calls</h2>
+  <div class="card"><table id="activity"></table></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+let lastTools = "";
+
+async function refresh() {
+  const state = await (await fetch("/api/state")).json();
+  document.title = state.title;
+  $("title").textContent = state.title;
+  $("meta").textContent = `${state.name} v${state.version} · data: ${state.data_dir} · HTTP sessions: ${state.sessions}`;
+  $("client").innerHTML = state.client
+    ? `<b>${esc(state.client.name)}</b> ${esc(state.client.version)} — sampling: <b>${state.client.sampling}</b>, elicitation: <b>${state.client.elicitation}</b>`
+    : "none yet";
+
+  // The tool cards hold input state, so they are only rebuilt when the tool list itself changes.
+  const signature = JSON.stringify(state.tools.map((t) => t.name));
+  if (signature !== lastTools) {
+    lastTools = signature;
+    $("tools").innerHTML = state.tools.map((t) => `
+      <div class="card" data-tool="${esc(t.name)}">
+        <div class="row"><b>${esc(t.name)}</b><span class="muted grow">${esc(t.description)}</span></div>
+        ${t.docs ? `<div class="muted" style="margin-top:4px">${esc(t.docs)}</div>` : ""}
+        <div class="row" style="margin-top:8px">
+          <input class="grow args" placeholder='arguments as JSON, e.g. {"text":"hi"}${t.schema.length ? " — fields: " + esc(t.schema.join(", ")) : ""}'>
+          <button class="run">Run</button>
+        </div>
+        <pre hidden></pre>
+      </div>`).join("");
+    for (const card of $("tools").children) {
+      card.querySelector(".run").onclick = async () => {
+        const out = card.querySelector("pre");
+        let args = {};
+        try { args = card.querySelector(".args").value.trim() ? JSON.parse(card.querySelector(".args").value) : {}; }
+        catch { out.hidden = false; out.textContent = "arguments are not valid JSON"; out.className = "err"; return; }
+        const res = await (await fetch("/api/run", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool: card.dataset.tool, args }) })).json();
+        out.hidden = false; out.textContent = res.output ?? res.error; out.className = res.ok ? "ok" : "err";
+      };
+    }
+  }
+
+  $("activity").innerHTML = state.activity.length
+    ? state.activity.map((a) => `<tr><td class="muted">${esc(a.at.slice(11, 19))}</td><td>${esc(a.tool)}</td><td class="muted">${esc(a.origin)}</td><td class="${a.ok ? "ok" : "err"}">${a.ok ? "ok" : "error"}</td><td class="muted">${a.duration_ms} ms</td></tr>`).join("")
+    : '<tr><td class="muted">no calls yet</td></tr>';
+}
+
+refresh().catch(() => {});
+setInterval(() => refresh().catch(() => {}), 2000);
+</script>
+</body>
+</html>
